@@ -1,131 +1,102 @@
-import socket, threading, logging 
+from rsa import VerificationError
+import utils
+import rsa, threading, socket, pickle, random
 
 class Server:
 
-    def __init__(self, host="127.0.0.1", port="65432"):
-        self.name = "S"
-        # socket stuff
-        self.host = host
+    def __init__(self, ip="127.0.0.1", port=1818, name="S"):
+        self.ip = ip
         self.port = port
-        # bind etc. in __init__ ??
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM) 
-        self.clients = [] # list of clients with info
-        # encryption stuff
-        self.public_key = None # generated with RSA ?
-        self.private_key = None # generated with RSA ?
-        # certificates stuff
-        self.certificate = {
-            "id": self.name + "<>" + str(self.port), # IP address too ???
-            "timestamp": None, #### DEAL WITH CE TRUC
-            "public_k": self.public_key 
-        }
+        self.name = name
+        self.id = self.name + utils.separator_id + str(self.port)
+        self.socket = None
+        (self.pub_key, self.priv_key) = rsa.newkeys(1024)
+        self.certificate = utils.generate_certificate(self.id, self.pub_key)
+        self.potential_clients = []
+        self.authenticated_clients = []
+        self.authenticated_sockets = []
 
-    
-    """ leave it here or put in __init__?? """
-    def start(self): # in __init__ ??
-        self.socket.bind((self.host, self.port))
+    def start(self):
+        # initialise socket
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.bind((self.ip, self.port))
+        # wait for clients
         self.socket.listen()
-        self.accept_clients()
-
-    """ accept connection BUT does not check if authentication OK """
-    def accept_clients(self):
-        while len(self.clients) < 3: # expect 3 clients every time
+        while len(self.authenticated_clients) < utils.number_of_clients-1: # we expect only 3 clients
             client, address = self.socket.accept()
-            print("Connected with {}".format(str(address))) 
-            # add client to list of clients (for now)
-            client_entry = {"socket": client}
-            self.clients.append(client_entry)
-            # client.send("Connected to server!".encode("utf8")) 
-            thread = threading.Thread(target=self.check_client_identity, args=(self.clients.index(client_entry),))
+            print("Connected with {}".format(str(address)))
+            self.potential_clients.append(client)
+            # thread to check identity of client
+            thread = threading.Thread(target=self.check_identity, args=(client,))
             thread.start()
-            
 
-    """ if client identity OK then add certif to list + redirect vers """
-    def check_client_identity(self,client_index):
-        client_socket = self.clients[client_index]["socket"]
-        authenticated_client = False
-        while True: # wait for authentication message from client
+    def check_identity(self, client):
+        # while client not authenticated wait for his authentication message
+        while client in self.potential_clients: 
             try:
-                # message = client_socket.recv(1024)
-                # parse pour recup certif + timestamps for freshness
-                # decrypt enveloppe (?) with pk in certif
-                authenticated_client = True #self.compare_hashes(timestamp_freshness, decrypted_enveloppe)
-                # if authenticated_client:
-                #   self.clients[client_index]["cert"] = certificate
-                self.clients[client_index]["cert"] = {"test": "dummy_cert"}
-                #   self.clients[client_index]["id"] = certificate["id"] # pour que ce soit + easy à chercher
-                break
-                # else:
-                #   client_socket.close()
-                #   self.clients.remove(self.clients[client_index])
-                #   break
+                message = client.recv(2048) # change value ??????
+                if message:
+                    message_split = message.split(utils.separator)
+                    if len(message_split) == 3:
+                        certificate = pickle.loads(message_split[0])
+                        verif_signature = rsa.verify(message_split[1], message_split[2], certificate["public_key"])
+                        # if verification of signature ok
+                        if verif_signature:
+                            # add client to list of authenticated users
+                            self.authenticated_clients.append({
+                                "certificate":certificate,
+                                "socket":client})
+                            self.authenticated_sockets.append(client)
+                            # remove client from list of potential users
+                            self.potential_clients.remove(client)
+                            print("Client "+certificate["id"].split(utils.separator_id)[0]+" authenticated successfully!")
+                            # server responds by sending its own certificate
+                            server_random_number = random.randbytes(utils.nb_bytes_random)
+                            server_message = pickle.dumps(self.certificate) + utils.separator + server_random_number + utils.separator + rsa.sign(server_random_number, self.priv_key,utils.hash_algo)
+                            client.send(server_message)
             except:
-                client_socket.close()
-                self.clients.remove(self.clients[client_index])
+                print("Error during authentication of client "+str(client.getpeername()))
+                client.close()
+                if client in self.potential_clients:
+                    self.potential_clients.remove(client)
+                if client in self.authenticated_clients:
+                    self.authenticated_clients.remove(client)
                 break
+        
+        if len(self.authenticated_clients) == utils.number_of_clients and len(self.potential_clients) == 0: # if all clients authenticated
+            # send client certificates to other clients
+            for auth_client in self.authenticated_clients:
+                random_number = random.randbytes(utils.nb_bytes_random)
+                message = b''
+                for client_certificate in self.authenticated_clients:
+                    if client_certificate != auth_client:
+                        message += pickle.dumps(client_certificate["certificate"]) + utils.separator
+                message += random_number + utils.separator + rsa.sign(random_number, self.priv_key, utils.hash_algo)
+                auth_client["socket"].send(message)
+            self.transfer_messages(client)
 
-        if authenticated_client:
-            # send server certificate with timestamp for freshness
-            all_users_auth = self.all_user_authenticated()
-            if all_users_auth:
-                # send certificates to every one
-                pass
-            # puis ok pour transfer messages maintenant
-            self.transfer_messages(client_socket)
-    
     def transfer_messages(self, client_socket):
-        while True:
+        sender = None
+        for client in self.authenticated_clients:
+            if client["socket"] == client:
+                sender = client["certificate"]["id"]
+        while client_socket in self.authenticated_sockets:
             try:
-                message = client_socket.recv(1024).decode('utf8')
-                # parse pour recup recipient_list + message body
-                # recipient_list = self.clients
-                # for recipient in recipient_list:
-                    # associate recipient to recipient_socket
-                #    recipient["socket"].send(message) #_body)
-                for client in self.clients:
-                    if client["socket"] != client_socket:
-                        client["socket"].send(message.encode('utf8'))
+                message = client_socket.recv(1024)
+                if message:
+                    message_split = message.split(utils.separator)
+                    if len(message_split) >= 2:
+                        recipient_list = pickle.loads(message_split[0])
+                        for recipient in recipient_list:
+                            print("Transfer message to "+recipient)
+                            for client in self.authenticated_clients:
+                                if recipient == client["certificate"]["id"]:
+                                    message_to_transfer = sender.encode() + utils.separator + message_split[1]
+                                    print("Message to transfer : "+str(message_to_transfer))
+                                    client["socket"].send(message_to_transfer)
             except:
-                print("Oups! Something went wrong")
-                client_socket.close()
-                for client in self.clients:
-                    if client["socket"] == client_socket:
-                        print("Someone left!")
-                        self.clients.remove(client)
-                break
-
-    def all_user_authenticated(self):
-        all_user_auth = False
-        for client in self.clients:
-            all_user_auth = all_user_auth and ("cert" in client)
-        return all_user_auth
-
-    """============================================================="""
-    """ in tool file ???? because common to all entities OR part of libraries """
-    def decrypt(self, key, cipher_text):
-        # return decrypted_message
-        pass
-
-    def encrypt(self, key, plain_text):
-        # return encrypted_message
-        pass
-
-    def sign_message(self, message):
-        # hash = hash(message)
-        # signed_message = self.encrypt(self.private_key, hash)
-        # return signed_message
-        pass
-
-    def compare_hash(self, message, hash):
-        # hashed_message = hash(plain_text)
-        # return hashed_message == hash
-        pass
-    """ in tool file ???? because common to all entities """
-    """============================================================="""
-   
-# piste: faire 1 seule fonction "start_server" dans laquelle j'appelle accept_client et tout
-
+                print("Oups, error while transfering message")
 
 if __name__ == "__main__":
-    server = Server('127.0.0.1', 1818)
+    server = Server()
     server.start()
