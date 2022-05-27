@@ -147,9 +147,6 @@ class Server:
                 message = client.recv(1024)
                 if message and "test".encode() not in message and len(self.authenticated_clients) == utils.number_of_clients:
                     # broadcast message to all entities (except the one who sent message)
-                    ################### print for demonstration ############################
-                    print("\nTransfering message "+str(message))
-                    ########################################################################
                     for auth_client_id, auth_client_val in self.authenticated_clients.items():
                         if auth_client_id != client_id:
                             auth_client_val["socket"].send(message)
