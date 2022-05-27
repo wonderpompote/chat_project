@@ -156,9 +156,6 @@ class Client:
         concatenated_rand_nb = b''.join(self.rand_nb_key_agreement)
         hash.update(concatenated_rand_nb)
         self.session_key = hash.digest()
-        ################# for demonstration ######################
-        print("session key : "+str(self.session_key))
-        ##########################################################
 
     def key_agreement(self):
         self.send_random_number() # send our random number to the other entities (via server)
@@ -198,9 +195,6 @@ class Client:
                 # create new aes cipher to encrypt message
                 aes_cipher = AES.new(self.session_key, AES.MODE_CBC)
                 encrypted_message = aes_cipher.encrypt(padded_message)
-                #################### for demonstration #########################
-                print("Encrypted (padded) message to be sent : "+str(encrypted_message))
-                ################################################################
                 # add sender id to message and aes iv (so the others will be able to decrypt)
                 message_to_send = self.id.encode() + utils.separator + aes_cipher.iv + utils.separator + encrypted_message
                 self.socket.send(message_to_send)
@@ -226,9 +220,6 @@ class Client:
                         # recover aes iv and create cipher object to decrypt message
                         aes_iv = message_split[1]
                         aes_cipher = AES.new(self.session_key, AES.MODE_CBC, iv=aes_iv)
-                        #################### for demonstration #########################
-                        print("Encrypted (padded) message received: "+str(message_split[2]))
-                        ################################################################
                         # decrypt message using session key
                         decrypted_message =  aes_cipher.decrypt(message_split[2])
                         # decode message and remove padding
